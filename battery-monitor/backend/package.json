@@ -1,0 +1,26 @@
+{
+  "name": "battery-monitor-backend",
+  "version": "1.0.0",
+  "description": "Battery monitoring system backend",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "nodemon index.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "ws": "^8.16.0",
+    "mqtt": "^5.3.4",
+    "sqlite3": "^5.1.6",
+    "better-sqlite3": "^9.2.2",
+    "redis": "^4.6.12",
+    "cors": "^2.8.5",
+    "dotenv": "^16.3.1",
+    "winston": "^3.11.0",
+    "node-cron": "^3.0.3"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.2"
+  }
+}
