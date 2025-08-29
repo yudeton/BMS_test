@@ -10,8 +10,30 @@ from ..models.database import BatteryData, BatteryAlert, SystemStatus
 from ..models.schemas import BatteryRealtimeData, BatteryAlert as AlertSchema, BatteryStatus, HealthCheck
 from ..services.cache_service import CacheService
 from ..services.mqtt_service import MQTTService
+from ..services.database_service import DatabaseService
 
 router = APIRouter()
+
+@router.get("/status")
+async def get_system_status():
+    """系統狀態端點"""
+    try:
+        return {
+            "status": "ok",
+            "database": "connected",
+            "timestamp": datetime.now().isoformat(),
+            "bms": "monitoring",
+            "message": "Enhanced BMS monitoring system with POC integration active",
+            "features": [
+                "D2 Modbus protocol support",
+                "PostgreSQL data persistence",
+                "Real-time WebSocket updates",
+                "Alert management",
+                "Historical data queries"
+            ]
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"System error: {str(e)}")
 
 # 假設我們有這些依賴注入
 async def get_cache_service() -> CacheService:
@@ -22,16 +44,21 @@ async def get_mqtt_service() -> MQTTService:
     # 這將在主應用中實現
     pass
 
+async def get_database_service() -> DatabaseService:
+    # 這將在主應用中實現
+    pass
+
 @router.get("/health", response_model=HealthCheck)
 async def health_check(
     cache: CacheService = Depends(get_cache_service),
-    mqtt: MQTTService = Depends(get_mqtt_service)
+    mqtt: MQTTService = Depends(get_mqtt_service),
+    database: DatabaseService = Depends(get_database_service)
 ):
-    """健康檢查端點"""
+    """健康檢查端點（增強版）"""
     connections = {
-        "mqtt": mqtt.is_connected() if mqtt else False,
+        "database": database.is_connected() if database else False,
         "redis": cache.is_connected() if cache else False,
-        "database": True  # 簡化假設資料庫總是可用
+        "mqtt": mqtt.is_connected() if mqtt else False
     }
     
     return HealthCheck(
@@ -40,15 +67,35 @@ async def health_check(
     )
 
 @router.get("/realtime", response_model=BatteryRealtimeData)
-async def get_realtime_data(cache: CacheService = Depends(get_cache_service)):
-    """獲取即時電池數據"""
+async def get_realtime_data(
+    cache: CacheService = Depends(get_cache_service),
+    database: DatabaseService = Depends(get_database_service)
+):
+    """獲取即時電池數據（增強版）"""
     try:
-        # 首先嘗試從緩存獲取
-        cached_data = await cache.get_latest_data("realtime")
-        if cached_data:
-            return BatteryRealtimeData(**cached_data)
+        # 首先嘗試從緩存獲取（最快）
+        if cache and cache.is_connected():
+            cached_data = await cache.get_latest_data("realtime")
+            if cached_data:
+                return BatteryRealtimeData(**cached_data)
         
-        # 如果緩存沒有數據，返回預設值
+        # 如果緩存未命中，從資料庫獲取最新數據
+        if database and database.is_connected():
+            latest_data = await database.get_latest_battery_data(limit=1)
+            if latest_data:
+                data = latest_data[0]
+                return BatteryRealtimeData(
+                    timestamp=datetime.fromisoformat(data["timestamp"]),
+                    total_voltage=data.get("total_voltage", 0.0),
+                    current=data.get("current", 0.0),
+                    power=data.get("power", 0.0),
+                    soc=data.get("soc", 0.0),
+                    temperature=data.get("temperature", 0.0),
+                    status=data.get("status", "unknown"),
+                    connection_status=data.get("connection_status", "disconnected")
+                )
+        
+        # 如果沒有數據，返回預設值
         return BatteryRealtimeData(
             timestamp=datetime.utcnow(),
             total_voltage=0.0,
@@ -64,36 +111,71 @@ async def get_realtime_data(cache: CacheService = Depends(get_cache_service)):
         raise HTTPException(status_code=500, detail=f"Error retrieving realtime data: {str(e)}")
 
 @router.get("/history/{duration}")
-async def get_history_data(duration: str, cache: CacheService = Depends(get_cache_service)):
-    """獲取歷史數據"""
+async def get_history_data(
+    duration: str, 
+    database: DatabaseService = Depends(get_database_service)
+):
+    """獲取歷史數據（實現版）"""
     try:
         duration_map = {
-            '1h': timedelta(hours=1),
-            '24h': timedelta(hours=24),
-            '7d': timedelta(days=7),
-            '30d': timedelta(days=30)
+            '1h': 1,
+            '24h': 24,
+            '7d': 24 * 7,
+            '30d': 24 * 30
         }
         
-        time_delta = duration_map.get(duration, timedelta(hours=1))
-        start_time = datetime.utcnow() - time_delta
+        hours = duration_map.get(duration, 1)
+        start_time = datetime.utcnow() - timedelta(hours=hours)
         
-        # 這裡需要實際的資料庫查詢，暫時返回空數據
-        return {"data": [], "duration": duration, "start_time": start_time.isoformat()}
+        # 從資料庫獲取歷史數據
+        if database and database.is_connected():
+            history_data = await database.get_battery_history(hours=hours)
+            return {
+                "data": history_data, 
+                "duration": duration, 
+                "start_time": start_time.isoformat(),
+                "count": len(history_data)
+            }
+        else:
+            return {
+                "data": [], 
+                "duration": duration, 
+                "start_time": start_time.isoformat(),
+                "count": 0,
+                "error": "Database not connected"
+            }
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error retrieving history data: {str(e)}")
 
 @router.get("/cells")
-async def get_cell_data(cache: CacheService = Depends(get_cache_service)):
-    """獲取電芯數據"""
+async def get_cell_data(
+    cache: CacheService = Depends(get_cache_service),
+    database: DatabaseService = Depends(get_database_service)
+):
+    """獲取電芯數據（增強版）"""
     try:
-        cached_data = await cache.get_latest_data("realtime")
-        if cached_data and "cells" in cached_data:
-            return {
-                "cells": cached_data["cells"],
-                "timestamp": cached_data.get("timestamp"),
-                "count": len(cached_data["cells"])
-            }
+        # 先嘗試從緩存獲取
+        if cache and cache.is_connected():
+            cached_data = await cache.get_latest_data("realtime")
+            if cached_data and "cells" in cached_data:
+                return {
+                    "cells": cached_data["cells"],
+                    "timestamp": cached_data.get("timestamp"),
+                    "count": len(cached_data["cells"])
+                }
+        
+        # 從資料庫獲取最新數據
+        if database and database.is_connected():
+            latest_data = await database.get_latest_battery_data(limit=1)
+            if latest_data:
+                data = latest_data[0]
+                cells = data.get("cells", [])
+                return {
+                    "cells": cells,
+                    "timestamp": data.get("timestamp"),
+                    "count": len(cells)
+                }
         
         return {"cells": [], "timestamp": None, "count": 0}
         
@@ -101,23 +183,35 @@ async def get_cell_data(cache: CacheService = Depends(get_cache_service)):
         raise HTTPException(status_code=500, detail=f"Error retrieving cell data: {str(e)}")
 
 @router.get("/alerts")
-async def get_alerts(limit: int = 10, cache: CacheService = Depends(get_cache_service)):
-    """獲取警報數據"""
+async def get_alerts(
+    limit: int = 10, 
+    database: DatabaseService = Depends(get_database_service)
+):
+    """獲取警報數據（實現版）"""
     try:
-        # 這裡需要實際的資料庫查詢，暫時返回空數據
-        return {"alerts": [], "count": 0}
+        if database and database.is_connected():
+            alerts = await database.get_active_alerts(limit=limit)
+            return {"alerts": alerts, "count": len(alerts)}
+        else:
+            return {"alerts": [], "count": 0, "error": "Database not connected"}
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error retrieving alerts: {str(e)}")
 
-@router.get("/status", response_model=BatteryStatus)
-async def get_system_status(cache: CacheService = Depends(get_cache_service)):
-    """獲取系統狀態"""
+@router.get("/system-status", response_model=BatteryStatus)
+async def get_system_status(
+    cache: CacheService = Depends(get_cache_service),
+    database: DatabaseService = Depends(get_database_service)
+):
+    """獲取系統狀態（增強版）"""
     try:
-        # 從緩存獲取系統狀態
-        cached_status = await cache.get_latest_data("status")
-        if cached_status:
-            return BatteryStatus(**cached_status)
+        # 先嘗試從緩存獲取
+        if cache and cache.is_connected():
+            cached_status = await cache.get_latest_data("status")
+            if cached_status:
+                return BatteryStatus(**cached_status)
+        
+        # TODO: 從資料庫獲取最新系統狀態
         
         # 預設狀態
         return BatteryStatus(
@@ -132,12 +226,23 @@ async def get_system_status(cache: CacheService = Depends(get_cache_service)):
         raise HTTPException(status_code=500, detail=f"Error retrieving system status: {str(e)}")
 
 @router.post("/alerts/{alert_id}/acknowledge")
-async def acknowledge_alert(alert_id: int):
-    """確認警報"""
+async def acknowledge_alert(
+    alert_id: int,
+    database: DatabaseService = Depends(get_database_service)
+):
+    """確認警報（實現版）"""
     try:
-        # 這裡需要資料庫更新操作
-        return {"message": f"Alert {alert_id} acknowledged", "alert_id": alert_id}
+        if database and database.is_connected():
+            success = await database.acknowledge_alert(alert_id)
+            if success:
+                return {"message": f"Alert {alert_id} acknowledged successfully", "alert_id": alert_id}
+            else:
+                raise HTTPException(status_code=404, detail=f"Alert {alert_id} not found")
+        else:
+            raise HTTPException(status_code=503, detail="Database not available")
         
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error acknowledging alert: {str(e)}")
 

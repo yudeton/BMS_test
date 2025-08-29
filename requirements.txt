@@ -6,10 +6,11 @@ python-multipart>=0.0.6
 # WebSocket 支援
 websockets>=11.0
 
-# 數據庫與 ORM
+# 數據庫與 ORM - PostgreSQL 支援
 sqlalchemy>=2.0.0
 alembic>=1.12.0
-aiosqlite>=0.19.0
+asyncpg>=0.28.0
+psycopg2-binary>=2.9.0
 
 # 緩存
 redis>=5.0.0
@@ -17,24 +18,30 @@ aioredis>=2.0.0
 
 # MQTT 客戶端
 paho-mqtt>=1.6.0
-
-# 數據處理
-pydantic>=2.4.0
-pydantic-settings>=2.0.0
-
-# 工具庫
-python-dotenv>=1.0.0
-structlog>=23.1.0
 asyncio-mqtt>=0.13.0
 
-# 藍牙通訊 (現有 BMS 模組)
+# 數據處理與驗證
+pydantic>=2.4.0
+pydantic-settings>=2.0.0
+pandas>=2.0
+numpy>=1.24
+
+# 藍牙通訊 (BMS 模組)
 bleak>=0.21.0
+pyserial>=3.5
 
 # HTTP 客戶端
 httpx>=0.25.0
 
-# 日期時間處理
+# 工具庫
+python-dotenv>=1.0.0
+structlog>=23.1.0
 python-dateutil>=2.8.0
-
-# JSON 序列化
 orjson>=3.9.0
+
+# 終端顯示
+rich>=13.0
+colorama>=0.4.6
+
+# 可選: 圖表顯示
+matplotlib>=3.7

@@ -10,7 +10,7 @@ class Settings(BaseSettings):
     port: int = 8000
     ws_port: int = 8001
     
-    # 資料庫設定
+    # 資料庫設定 (SQLite - 暫時使用，稍後可改為 PostgreSQL)
     database_url: str = "sqlite+aiosqlite:///./battery.db"
     db_path: str = "./battery.db"
     

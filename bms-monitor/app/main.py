@@ -13,6 +13,7 @@ from .api.websocket import websocket_endpoint, websocket_manager, start_heartbea
 from .services.cache_service import CacheService
 from .services.mqtt_service import MQTTService
 from .services.bms_service import BMSService
+from .services.database_service import DatabaseService
 
 # 設置日誌
 logging.basicConfig(
@@ -25,6 +26,7 @@ logger = logging.getLogger(__name__)
 cache_service = CacheService(settings.redis_url)
 mqtt_service = MQTTService(settings.mqtt_broker_url, settings.mqtt_client_id)
 bms_service = BMSService(settings.bms_mac_address)
+database_service = DatabaseService(settings.database_url)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -33,6 +35,14 @@ async def lifespan(app: FastAPI):
     logger.info("🚀 啟動 FastAPI BMS 監控服務...")
     
     # 連接服務
+    try:
+        await database_service.initialize()
+        logger.info("✅ 資料庫服務已連接")
+    except Exception as e:
+        logger.error(f"❌ 資料庫服務連接失敗: {e}")
+        # 資料庫是關鍵服務，失敗則拋出異常
+        raise
+    
     try:
         await cache_service.connect()
         logger.info("✅ Redis 緩存服務已連接")
@@ -72,6 +82,7 @@ async def lifespan(app: FastAPI):
     await cache_service.disconnect()
     await mqtt_service.disconnect()
     await bms_service.disconnect()
+    await database_service.close()
     logger.info("✅ 服務已關閉")
 
 app = FastAPI(
@@ -100,9 +111,13 @@ async def get_mqtt_service() -> MQTTService:
 async def get_bms_service() -> BMSService:
     return bms_service
 
+async def get_database_service() -> DatabaseService:
+    return database_service
+
 # 更新路由中的依賴注入
 app.dependency_overrides[get_cache_service] = lambda: cache_service
 app.dependency_overrides[get_mqtt_service] = lambda: mqtt_service
+app.dependency_overrides[get_database_service] = lambda: database_service
 
 # 註冊路由
 app.include_router(api_router, prefix="/api")
@@ -123,6 +138,7 @@ async def root():
         "version": "1.0.0",
         "status": "running",
         "services": {
+            "database": database_service.is_connected(),
             "cache": cache_service.is_connected(),
             "mqtt": mqtt_service.is_connected(),
             "bms": bms_service.connected
@@ -130,26 +146,46 @@ async def root():
     }
 
 async def handle_realtime_data(topic: str, data: Dict[str, Any]):
-    """處理即時數據消息"""
+    """處理即時數據消息（增強版）"""
     try:
-        # 存儲到緩存
-        await cache_service.set_latest_data("realtime", data)
+        # 儲存到資料庫（持久化）
+        if database_service.is_connected():
+            data_id = await database_service.save_battery_data(data)
+            if data_id:
+                logger.debug(f"電池數據已儲存到資料庫，ID: {data_id}")
+        
+        # 存儲到緩存（即時訪問）
+        if cache_service.is_connected():
+            await cache_service.set_latest_data("realtime", data)
         
         # 廣播到 WebSocket 客戶端
         await websocket_manager.broadcast(data, "realtime")
         
-        logger.debug(f"處理即時數據: {topic}")
+        logger.debug(f"處理即時數據: {topic} - 電壓: {data.get('total_voltage', 'N/A')}V, 電流: {data.get('current', 'N/A')}A")
         
     except Exception as e:
         logger.error(f"處理即時數據錯誤: {e}")
 
 async def handle_alert_data(topic: str, data: Dict[str, Any]):
-    """處理警報數據消息"""
+    """處理警報數據消息（增強版）"""
     try:
+        # 儲存警報到資料庫
+        if database_service.is_connected():
+            alert_id = await database_service.save_battery_alert(
+                alert_type=data.get("type", "unknown"),
+                severity=data.get("severity", "info"),
+                message=data.get("message", ""),
+                value=data.get("value"),
+                threshold=data.get("threshold"),
+                cell=data.get("cell")
+            )
+            if alert_id:
+                logger.info(f"警報已儲存到資料庫，ID: {alert_id}")
+        
         # 廣播警報到 WebSocket 客戶端
         await websocket_manager.broadcast(data, "alerts")
         
-        logger.info(f"處理警報數據: {data.get('message', 'Unknown alert')}")
+        logger.warning(f"🚨 警報: {data.get('message', 'Unknown alert')} (等級: {data.get('severity', 'unknown')})")
         
     except Exception as e:
         logger.error(f"處理警報數據錯誤: {e}")
@@ -162,11 +198,12 @@ async def bms_monitoring_task():
         try:
             # 嘗試連接 BMS
             if not bms_service.connected:
-                logger.info("嘗試連接 BMS...")
+                logger.info("🔌 嘗試連接 BMS...")
                 if await bms_service.connect():
+                    logger.info("✅ BMS 連接成功，正在喚醒設備...")
                     await bms_service.wake_bms()
                 else:
-                    logger.warning("BMS 連接失敗，30秒後重試")
+                    logger.warning("❌ BMS 連接失敗，30秒後重試")
                     await asyncio.sleep(30)
                     continue
             
