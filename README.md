@@ -1,67 +1,54 @@
-# 🔋 BMS 電池監控完整解決方案
+# 🔋 DALY BMS 監控系統
 
-完整的電池管理系統 (BMS) 監控專案，包含藍牙通訊協議破解與 Web 監控界面的全套解決方案。
+**基於 FastAPI 的專業級電池管理系統 Web 監控解決方案**
 
-## 🎯 專案概述
+## 📊 系統概述
 
-本專案成功實現了與 **DALY BMS (DL-411812013771)** 的完整通訊解決方案，從低階的 D2 Modbus 藍牙協議到高階的 Web 監控界面。
+本系統成功破解了 DALY BMS D2 Modbus 藍牙通訊協議，並建立了完整的 Web 監控界面，提供即時電池數據監控、歷史數據分析和智能警報功能。
 
-### ✅ 主要成就
-- 🔓 **協議破解成功** - 完全破解 DALY BMS K00T 韌體的 D2 Modbus 協議
-- 📊 **數據驗證通過** - 電壓讀取準確度 ±0.1V，與官方 Smart BMS App 一致
-- 🌐 **全端解決方案** - 從硬體通訊到 Web 界面的完整系統
-- 🐳 **容器化部署** - Docker Compose 一鍵部署
+### ✅ 已驗證功能
+- **精準數據讀取**: 總電壓 26.5V (±0.1V)，8串電芯電壓監控
+- **即時通訊**: 30秒數據更新，WebSocket 即時推送
+- **完整 API**: RESTful API + 自動文檔生成
+- **高效快取**: Redis 緩存提升響應速度
+- **跨平台**: 手機 PWA + 電腦 Web 界面
 
-## 📁 專案結構
+## 🏗️ 專案架構
 
 ```
-BMS_test/
-├── 📱 bms-bluetooth-poc/          # 藍牙通訊協議實現
-│   ├── core/                     # D2 Modbus 核心實現
-│   ├── tools/                    # 藍牙掃描與測試工具
-│   ├── docs/                     # 詳細技術文檔
-│   └── archive/                  # 協議研究歷程
-├── 🌐 battery-monitor/            # Web 監控系統
-│   ├── backend/                  # Node.js API 後端
-│   ├── frontend/                 # React 監控界面
-│   └── docker/                   # Docker 配置
-├── 📋 BMS通訊腳本CAN_ver8標準.pdf   # 官方 CAN 協議文檔
-└── 📸 Screenshots/               # 參考截圖
+battery/
+├── bms-monitor/              # 主要 FastAPI 監控系統
+│   ├── app/
+│   │   ├── api/             # REST API 端點
+│   │   ├── models/          # 數據模型
+│   │   ├── services/        # 核心服務
+│   │   └── utils/           # BMS 通訊工具
+│   ├── venv/                # Python 虛擬環境
+│   └── requirements.txt     # 依賴管理
+├── bms-bluetooth-poc/       # BMS 通訊協議研究
+│   └── core/               # 核心通訊模組
+└── docs/                   # 技術文檔
 ```
 
-## 🚀 快速開始
+## 🚀 快速啟動
 
-### 方案 A：藍牙直連測試 (推薦新手)
-
+### 1. 啟動監控系統
 ```bash
-# 1. 進入藍牙通訊目錄
+cd bms-monitor
+source venv/bin/activate
+python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+```
+
+### 2. 存取界面
+- **Web 界面**: http://localhost:8000
+- **API 文檔**: http://localhost:8000/docs
+- **WebSocket**: ws://localhost:8000/ws
+
+### 3. BMS 測試 (可選)
+```bash
 cd bms-bluetooth-poc
-
-# 2. 安裝 Python 依賴
-pip install -r core/requirements.txt
-
-# 3. 喚醒並測試 BMS
 python3 core/bms_wake_tester.py
 python3 core/daly_d2_modbus_test.py
-```
-
-**預期結果：**
-- 總電壓：~26.5V ✅
-- 電芯電壓：8串，3.32~3.325V ✅
-- 電流：靜止狀態 0.0A ✅
-- 溫度：4個感測器正常 ✅
-
-### 方案 B：完整 Web 監控系統
-
-```bash
-# 1. 進入監控系統目錄
-cd battery-monitor
-
-# 2. 一鍵啟動 (Docker Compose)
-docker-compose up -d
-
-# 3. 開啟瀏覽器
-http://localhost:3000
 ```
 
 ## 🔧 技術細節
@@ -82,11 +69,12 @@ registers = {
 }
 ```
 
-### 技術棧
-- **後端**: Node.js + Express + WebSocket
-- **前端**: React + Vite + TailwindCSS  
-- **藍牙**: Python Bleak
-- **部署**: Docker + Docker Compose
+### 核心技術棧
+- **後端**: FastAPI + Python 3.8+
+- **資料庫**: SQLite + SQLAlchemy ORM
+- **緩存**: Redis
+- **通訊**: WebSocket + MQTT
+- **BMS 協議**: DALY D2 Modbus over Bluetooth
 
 ## 📊 驗證結果
 
