@@ -27,9 +27,14 @@ RUN pip install --no-cache-dir --upgrade pip && \
 # 複製應用程式代碼
 COPY ./bms-monitor/app ./app
 
-# 複製藍牙初始化腳本
+# 複製 Alembic 遷移與設定
+COPY ./bms-monitor/alembic /app/alembic
+COPY ./bms-monitor/alembic.ini /app/alembic.ini
+
+# 複製啟動腳本
 COPY ./bms-monitor/bluetooth-init.sh /usr/local/bin/bluetooth-init.sh
-RUN chmod +x /usr/local/bin/bluetooth-init.sh
+COPY ./bms-monitor/app-start.sh /usr/local/bin/app-start.sh
+RUN chmod +x /usr/local/bin/bluetooth-init.sh /usr/local/bin/app-start.sh
 
 # 創建非 root 使用者 (但保持必要權限)
 RUN groupadd -r appuser && \
@@ -51,5 +56,6 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
 # 保持 root 用戶以訪問藍牙
 # USER appuser
 
-# 啟動命令 (使用模組模式執行)
-CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+# 進入點與啟動命令
+ENTRYPOINT ["/usr/local/bin/bluetooth-init.sh"]
+CMD ["/usr/local/bin/app-start.sh"]

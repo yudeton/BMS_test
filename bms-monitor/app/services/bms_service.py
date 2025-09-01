@@ -6,16 +6,26 @@ from datetime import datetime
 from typing import Dict, Any, Optional, List
 from bleak import BleakClient, BleakScanner
 
+# 導入自動斷線工具
+try:
+    from ..utils.bms_auto_disconnect import async_check_and_disconnect_bms
+    AUTO_DISCONNECT_AVAILABLE = True
+except ImportError:
+    AUTO_DISCONNECT_AVAILABLE = False
+
 logger = logging.getLogger(__name__)
 
 class BMSService:
     """BMS 通訊服務 - 整合現有的 D2 Modbus 協議"""
     
-    def __init__(self, mac_address: str = "41:18:12:01:37:71"):
+    def __init__(self, mac_address: str = "41:18:12:01:37:71", soc_register: int = 0x002C, soc_scale: float = 0.1, soc_offset: float = 0.0):
         self.mac_address = mac_address
         self.client: Optional[BleakClient] = None
         self.connected = False
         self.responses = []
+        self.soc_register = soc_register
+        self.soc_scale = soc_scale
+        self.soc_offset = soc_offset
         
         # BLE 特徵值
         self.write_char = "0000fff2-0000-1000-8000-00805f9b34fb"
@@ -28,7 +38,7 @@ class BMSService:
             "temperature_base": 0x0020,   # 溫度起始地址
             "total_voltage": 0x0028,      # 總電壓
             "current": 0x0029,            # 電流
-            "soc": 0x002C,               # SOC
+            "soc": soc_register,         # SOC（可配置）
             "mosfet_status": 0x002D,     # MOSFET 狀態
             "fault_bitmap": 0x003A,      # 故障狀態
         }
@@ -71,15 +81,19 @@ class BMSService:
             self.responses.append(data)
             logger.debug(f"收到 BMS 響應: {data.hex(' ').upper()}")
     
-    async def connect(self) -> bool:
-        """連接到 BMS (基於 POC 成功經驗)"""
+    async def connect(self, auto_disconnect: bool = True) -> bool:
+        """連接到 BMS (增強版：自動處理系統連接衝突)
+        
+        Args:
+            auto_disconnect: 是否在連接失敗時自動斷開系統連接
+        """
         max_retries = 3
         
         for attempt in range(max_retries):
             try:
                 logger.info(f"嘗試連接 BMS {self.mac_address} ({attempt + 1}/{max_retries})")
                 
-                # 直接連接，不預掃描（POC 成功策略）
+                # 直接連接（快速路徑）
                 self.client = BleakClient(self.mac_address)
                 await self.client.connect(timeout=10.0)
                 
@@ -100,7 +114,89 @@ class BMSService:
                 return True
                 
             except Exception as e:
-                logger.error(f"BMS 連接錯誤: {e}")
+                error_msg = str(e).lower()
+                logger.error(f"BMS 連接錯誤: {e!r} (type={type(e).__name__})")
+
+                # 若是設備找不到，嘗試自動處理
+                if ("not found" in error_msg or "device with address" in error_msg) and auto_disconnect and AUTO_DISCONNECT_AVAILABLE:
+                    logger.warning("🔌 設備無法連接，嘗試自動斷開系統連接...")
+                    
+                    try:
+                        # 執行自動斷線檢查
+                        disconnect_result = await async_check_and_disconnect_bms(self.mac_address)
+                        
+                        if disconnect_result["success"] and disconnect_result["action_taken"] == "disconnect":
+                            logger.info("✅ 已自動斷開系統連接，立即重試...")
+                            # 等待系統斷線完成
+                            await asyncio.sleep(3)
+                            
+                            # 重試連接
+                            self.client = BleakClient(self.mac_address)
+                            await self.client.connect(timeout=10.0)
+                            
+                            if self.client.is_connected:
+                                await self.client.start_notify(self.read_char, self.notification_handler)
+                                self.connected = True
+                                logger.info("✅ 自動斷線後連接成功！")
+                                return True
+                        elif disconnect_result["success"] and not disconnect_result["initial_connected"]:
+                            logger.info("🔍 設備未被系統連接，嘗試掃描...")
+                        else:
+                            logger.warning(f"自動斷線失敗: {disconnect_result.get('message', 'Unknown error')}")
+                            
+                    except Exception as auto_disconnect_error:
+                        logger.error(f"自動斷線過程出錯: {auto_disconnect_error}")
+
+                # 嘗試掃描重連（備用策略）
+                if "not found" in error_msg or "device with address" in error_msg:
+                    try:
+                        logger.info("🔎 嘗試掃描設備...")
+                        # 先依地址尋找（若為公開地址）
+                        device = await BleakScanner.find_device_by_address(self.mac_address, timeout=15.0)
+                        # 若找不到，改以通用掃描清單尋找（先比對地址，再比名稱前綴）
+                        if device is None:
+                            logger.info("📡 進行廣泛掃描，嘗試以地址或名稱匹配...")
+                            devices = await BleakScanner.discover(timeout=15.0)
+                            # 先地址精確匹配（處理無名稱/名稱變動/RPA）
+                            target = None
+                            mac_upper = self.mac_address.upper()
+                            for d in devices:
+                                if (d.address or "").upper() == mac_upper:
+                                    target = d
+                                    break
+                            # 再名稱前綴匹配（Daly 常見前綴為 DL-）
+                            if target is None:
+                                for d in devices:
+                                    name = (d.name or "").strip()
+                                    if name.startswith("DL-"):
+                                        target = d
+                                        break
+                            # 紀錄掃描概況以便診斷
+                            try:
+                                sample = ", ".join(
+                                    [f"{(d.name or '').strip() or 'Unknown'}<{d.address}>" for d in devices[:8]]
+                                )
+                                logger.debug(f"掃描到候選: {sample} ... 共{len(devices)}項")
+                            except Exception:
+                                pass
+                            device = target
+                        if device is not None:
+                            logger.info(f"📡 掃描到 BMS: {device.address} ({device.name})，嘗試連接")
+                            # 使用掃描得到的 BLEDevice 物件連線，避免 BlueZ 裝置快取問題
+                            self.client = BleakClient(device)
+                            await self.client.connect(timeout=15.0)
+                            if self.client.is_connected:
+                                await self.client.start_notify(self.read_char, self.notification_handler)
+                                self.connected = True
+                                logger.info("✅ 掃描後連接成功！")
+                                return True
+                            else:
+                                logger.warning("掃描後仍無法連接")
+                        else:
+                            logger.warning("掃描未找到目標設備")
+                    except Exception as se:
+                        logger.error(f"掃描/重連錯誤: {se}")
+
                 if attempt < max_retries - 1:
                     logger.info("等待 2 秒後重試...")
                     await asyncio.sleep(2)
@@ -214,14 +310,14 @@ class BMSService:
                 result["cell_voltages"] = voltages
                 
             elif register_addr == self.registers["temperature_base"]:
-                # 溫度數據
+                # 溫度數據（0.1K → 攝氏度）
                 temperatures = []
                 for i in range(0, min(len(data), 8), 2):
                     if i + 1 < len(data):
                         raw_t = struct.unpack('>H', data[i:i+2])[0]
-                        if raw_t > 0 and raw_t < 1000:  # 合理溫度範圍
-                            temp = (raw_t - 2731) * 0.1  # Kelvin 轉攝氏度
-                            temperatures.append(temp)
+                        temp_c = (raw_t / 10.0) - 273.1
+                        if -40.0 <= temp_c <= 120.0:
+                            temperatures.append(temp_c)
                 result["temperatures"] = temperatures
                 
             elif register_addr == self.registers["soc"] and len(data) >= 2:
@@ -274,7 +370,8 @@ class BMSService:
                     data["power"] = data["total_voltage"] * data["current"]
                 
                 # 估算 SOC
-                if "total_voltage" in data:
+                # 只有在未取得 SOC 寄存器數值時，才使用電壓估算
+                if "soc" not in data and "total_voltage" in data:
                     data["soc"] = self.estimate_soc(data["total_voltage"])
                 
                 self.read_count += 1
@@ -324,6 +421,15 @@ class BMSService:
                     data["current_direction"] = "充電"
                 success = True
                 logger.debug(f"提取電流: {data['current']}A ({data['current_direction']})")
+
+            # 提取 SOC（可配置寄存器）
+            soc_pos = self.registers["soc"] * 2
+            if soc_pos + 1 < len(data_bytes):
+                raw_soc = struct.unpack('>H', data_bytes[soc_pos:soc_pos+2])[0]
+                soc_val = (raw_soc * self.soc_scale) + self.soc_offset
+                if 0.0 <= soc_val <= 100.0:
+                    data["soc"] = round(soc_val, 1)
+                    success = True
             
             # 提取電芯電壓 (地址 0x0000 開始)
             voltages = []
@@ -346,15 +452,31 @@ class BMSService:
                 pos = temp_pos + i * 2
                 if pos + 1 < len(data_bytes):
                     raw_t = struct.unpack('>H', data_bytes[pos:pos+2])[0]
-                    if raw_t > 0 and raw_t < 1000:
-                        temp = (raw_t - 2731) * 0.1
-                        temperatures.append(temp)
+                    temp_c = (raw_t / 10.0) - 273.1
+                    if -40.0 <= temp_c <= 120.0:
+                        temperatures.append(temp_c)
             
             if temperatures:
                 data["temperatures"] = temperatures
                 data["temperature"] = sum(temperatures) / len(temperatures)
                 logger.debug(f"提取溫度: 平均 {data['temperature']:.1f}°C")
                 success = True
+
+            # 探測 SOC 可能所在位置（偵查模式）
+            try:
+                candidates = []
+                for reg in range(0x20, 0x40):  # 掃描附近暫存器
+                    pos = reg * 2
+                    if pos + 1 < len(data_bytes):
+                        raw = struct.unpack('>H', data_bytes[pos:pos+2])[0]
+                        val = raw * 0.1
+                        if 0.0 <= val <= 100.0:
+                            candidates.append((reg, val))
+                if candidates:
+                    sample = ", ".join([f"0x{r:02X}:{v:.1f}%" for r, v in candidates[:8]])
+                    logger.debug(f"SOC 掃描候選: {sample} ... 共{len(candidates)}項")
+            except Exception as _:
+                pass
             
             return success
             
@@ -393,14 +515,54 @@ class BMSService:
                     data["current_direction"] = parsed.get("current_direction")
                     success = True
                     break
-        
+
+        # 讀取溫度（4 個感測器）
+        cmd = self.build_modbus_command(self.registers["temperature_base"], 4)
+        responses = await self.send_command(cmd, 2.0, "讀取溫度 (0x0020-0x0023)")
+        for response in responses:
+            if response != cmd:
+                parsed = self.parse_modbus_response(cmd, response)
+                # 直接解析資料段（兩兩一組，0.1K）
+                try:
+                    payload = response[3:3+response[2]] if len(response) > 3 else b""
+                    temps = []
+                    for i in range(0, min(len(payload), 8), 2):
+                        raw_t = struct.unpack('>H', payload[i:i+2])[0]
+                        temp_c = (raw_t / 10.0) - 273.1
+                        if -40.0 <= temp_c <= 120.0:
+                            temps.append(temp_c)
+                    if temps:
+                        data["temperatures"] = temps
+                        data["temperature"] = sum(temps) / len(temps)
+                        success = True
+                except Exception as e:
+                    logger.debug(f"解析溫度失敗: {e}")
+
+        # 讀取 SOC（從可配置寄存器，預設 0x002C）
+        cmd = self.build_modbus_command(self.registers["soc"], 1)
+        responses = await self.send_command(cmd, 2.0, "讀取 SOC (0x002C)")
+        for response in responses:
+            if response != cmd:
+                parsed = self.parse_modbus_response(cmd, response)
+                try:
+                    payload = response[3:3+response[2]] if len(response) > 3 else b""
+                    if len(payload) >= 2:
+                        raw_soc = struct.unpack('>H', payload[:2])[0]
+                        soc_val = (raw_soc * self.soc_scale) + self.soc_offset
+                        if 0.0 <= soc_val <= 100.0:
+                            data["soc"] = round(soc_val, 1)
+                            success = True
+                except Exception as e:
+                    logger.debug(f"解析 SOC 失敗: {e}")
+
         return success
     
     def estimate_soc(self, voltage: float) -> float:
-        """基於電壓估算 SOC（8S LiFePO4）"""
-        # 8S LiFePO4 電壓範圍：24.0V (0%) - 29.6V (100%)
+        """基於電壓估算 SOC（8S LiFePO4）
+        使用 24.0V → 0%、29.2V → 100% 的線性近似，以貼近實測。
+        """
         min_voltage = 24.0
-        max_voltage = 29.6
+        max_voltage = 29.2
         
         if voltage <= min_voltage:
             return 0.0

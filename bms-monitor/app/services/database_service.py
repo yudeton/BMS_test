@@ -214,6 +214,8 @@ class DatabaseService:
                         "power": bd.power,
                         "soc": bd.soc,
                         "temperature": bd.temperature,
+                        "temperatures": json.loads(bd.temperatures) if bd.temperatures else [],
+                        "cells": json.loads(bd.cells) if bd.cells else [],
                         "status": bd.status,
                         "connection_status": bd.connection_status
                     }

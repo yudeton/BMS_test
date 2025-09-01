@@ -11,6 +11,7 @@ from ..models.schemas import BatteryRealtimeData, BatteryAlert as AlertSchema, B
 from ..services.cache_service import CacheService
 from ..services.mqtt_service import MQTTService
 from ..services.database_service import DatabaseService
+from ..services.bms_service import BMSService
 
 router = APIRouter()
 
@@ -48,6 +49,10 @@ async def get_database_service() -> DatabaseService:
     # 這將在主應用中實現
     pass
 
+async def get_bms_service() -> BMSService:
+    # 這將在主應用中實現
+    pass
+
 @router.get("/health", response_model=HealthCheck)
 async def health_check(
     cache: CacheService = Depends(get_cache_service),
@@ -65,6 +70,41 @@ async def health_check(
         timestamp=datetime.utcnow(),
         connections=connections
     )
+
+@router.get("/diagnostics/soc-candidates")
+async def diag_soc_candidates(
+    bms: BMSService = Depends(get_bms_service)
+):
+    """診斷：掃描可能的 SOC 寄存器（根源定位用）。"""
+    try:
+        if not bms.connected:
+            ok = await bms.connect()
+            if not ok:
+                return {"error": "BMS not connected"}
+
+        # 讀取大範圍數據
+        cmd = bms.build_modbus_command(0x0000, 0x003E)
+        responses = await bms.send_command(cmd, 4.0, "診斷大範圍讀取")
+        for response in responses:
+            if response == cmd:
+                continue
+            # 擷取 payload
+            if len(response) < 5:
+                continue
+            data_len = response[2]
+            payload = response[3:3+data_len]
+            cands = []
+            for reg in range(0x20, 0x40):
+                pos = reg*2
+                if pos+1 < len(payload):
+                    raw = int.from_bytes(payload[pos:pos+2], 'big')
+                    val = raw * bms.soc_scale + bms.soc_offset
+                    if 0.0 <= val <= 100.0:
+                        cands.append({"register": f"0x{reg:02X}", "raw": raw, "val": round(val,1), "selected": (reg == bms.registers["soc"])})
+            return {"candidates": cands, "using": f"0x{bms.registers['soc']:02X}", "scale": bms.soc_scale, "offset": bms.soc_offset}
+        return {"error": "no valid response"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/realtime", response_model=BatteryRealtimeData)
 async def get_realtime_data(

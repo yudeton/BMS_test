@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>DALY BMS 即時監控</title>
+    <style>
+      body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 20px; color: #222; }
+      h1 { margin: 0 0 8px; }
+      .grid { display: grid; grid-template-columns: repeat(4, minmax(180px, 1fr)); gap: 12px; }
+      .card { border: 1px solid #e5e7eb; border-radius: 8px; padding: 12px; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,0.04); }
+      .key { color: #6b7280; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+      .val { font-size: 24px; font-weight: 600; }
+      table { border-collapse: collapse; width: 100%; margin-top: 12px; }
+      th, td { border: 1px solid #e5e7eb; padding: 6px 8px; text-align: right; }
+      th { background: #f9fafb; font-weight: 600; }
+      .ok { color: #16a34a; }
+      .warn { color: #d97706; }
+      .bad { color: #dc2626; }
+      .muted { color: #6b7280; }
+      .row { display:flex; align-items:center; gap:8px; margin: 6px 0; }
+      .dot { width:8px; height:8px; border-radius:50%; background:#22c55e; }
+      .pill { background:#eef2ff; color:#3730a3; border-radius:9999px; padding:2px 8px; font-size:12px; }
+      .footer { margin-top: 16px; font-size: 12px; color: #6b7280; }
+      a { color: #2563eb; text-decoration: none; }
+    </style>
+  </head>
+  <body>
+    <h1>DALY BMS 即時監控 <span class="pill" id="state">連線中...</span></h1>
+    <div class="grid">
+      <div class="card"><div class="key">電壓</div><div class="val" id="v">--</div></div>
+      <div class="card"><div class="key">電流</div><div class="val" id="i">--</div></div>
+      <div class="card"><div class="key">功率</div><div class="val" id="p">--</div></div>
+      <div class="card"><div class="key">SOC</div><div class="val" id="soc">--</div></div>
+      <div class="card"><div class="key">均溫</div><div class="val" id="t">--</div></div>
+      <div class="card"><div class="key">時間</div><div class="val" id="ts">--</div></div>
+      <div class="card"><div class="key">狀態</div><div class="val" id="status">--</div></div>
+      <div class="card"><div class="key">連線</div><div class="val" id="conn">--</div></div>
+    </div>
+
+    <div class="card" style="margin-top:12px">
+      <div class="row"><div class="dot" id="wsdot"></div><div>WebSocket: <span id="wstext" class="muted">連線中...</span></div></div>
+      <table id="cellsTable">
+        <thead><tr><th>#</th><th>Voltage (V)</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <div class="footer">API: <a href="/docs" target="_blank">Swagger</a> · 即時頁面位於 /ui</div>
+
+    <script>
+      const $ = (id) => document.getElementById(id);
+      const fmt = (n, d=3) => (typeof n === 'number' && !isNaN(n)) ? n.toFixed(d) : '--';
+      const fmt1 = (n) => fmt(n, 1);
+      const cellsBody = document.querySelector('#cellsTable tbody');
+
+      async function pullRealtime() {
+        try {
+          const r = await fetch('/api/realtime');
+          const j = await r.json();
+          render(j);
+        } catch (e) { console.error(e); }
+      }
+
+      function render(d) {
+        $('v').textContent = fmt1(d.total_voltage);
+        $('i').textContent = fmt1(d.current);
+        const p = (d.total_voltage ?? 0) * (d.current ?? 0);
+        $('p').textContent = fmt1(p);
+        $('soc').textContent = typeof d.soc === 'number' ? d.soc.toFixed(1) + '%' : '--';
+        $('t').textContent = typeof d.temperature === 'number' ? fmt1(d.temperature) + '°C' : '--';
+        $('ts').textContent = d.timestamp ? new Date(d.timestamp).toLocaleString() : '--';
+        $('status').textContent = d.status ?? '--';
+        $('conn').textContent = d.connection_status ?? '--';
+
+        // cells
+        cellsBody.innerHTML = '';
+        (d.cells || []).forEach((cv, idx) => {
+          const tr = document.createElement('tr');
+          const th = document.createElement('td'); th.textContent = idx+1; th.style.textAlign='center';
+          const td = document.createElement('td'); td.textContent = fmt(cv, 3);
+          tr.appendChild(th); tr.appendChild(td); cellsBody.appendChild(tr);
+        });
+      }
+
+      function connectWS() {
+        const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+        const ws = new WebSocket(`${proto}://${location.host}/ws`);
+        ws.onopen = () => { $('wsdot').style.background = '#22c55e'; $('wstext').textContent = '已連線'; };
+        ws.onclose = () => { $('wsdot').style.background = '#dc2626'; $('wstext').textContent = '已斷線，5秒後重試'; setTimeout(connectWS, 5000); };
+        ws.onerror = () => { $('wsdot').style.background = '#d97706'; $('wstext').textContent = '錯誤'; };
+        ws.onmessage = (e) => {
+          try { const msg = JSON.parse(e.data); if (msg.type === 'realtime') render(msg.payload || msg); else render(msg); }
+          catch { /* ignore */ }
+        };
+      }
+
+      pullRealtime();
+      setInterval(pullRealtime, 15000);
+      connectWS();
+    </script>
+  </body>
+  </html>
+

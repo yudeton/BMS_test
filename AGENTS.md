@@ -14,6 +14,11 @@
 - Quick BLE tests: `python bms-monitor/app/utils/daly_d2_modbus_test.py`.
 - Health check: `curl http://localhost:8000/api/status`.
 
+## Database Migrations (Alembic)
+- Apply latest: `make db-up` (uses `DATABASE_URL` from `.env`).
+- Create migration: `make db-rev m="add new fields"` after updating models.
+- Docker startup auto-runs `alembic upgrade head` via `/usr/local/bin/app-start.sh`.
+
 ## Coding Style & Naming Conventions
 - Python 3.11+, 4‑space indentation, PEP8.
 - Modules/functions: `snake_case`; classes: `PascalCase`; constants: `UPPER_SNAKE_CASE`.
@@ -36,4 +41,3 @@
 - Secrets live in `.env` (e.g., `DATABASE_URL`, `REDIS_URL`, `MQTT_BROKER_URL`, `BMS_MAC_ADDRESS`). Do not commit secrets.
 - When using Docker, the service runs with `network_mode: host` and `privileged: true` for BLE access — limit to trusted hosts.
 - Prefer local dev without privileges when BLE is not required.
-

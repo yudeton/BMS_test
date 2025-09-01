@@ -9,6 +9,7 @@ from typing import Dict, Any
 
 from .config import settings
 from .api.routes import router as api_router
+from .api import routes as api_routes
 from .api.websocket import websocket_endpoint, websocket_manager, start_heartbeat_task
 from .services.cache_service import CacheService
 from .services.mqtt_service import MQTTService
@@ -25,7 +26,12 @@ logger = logging.getLogger(__name__)
 # 全局服務實例
 cache_service = CacheService(settings.redis_url)
 mqtt_service = MQTTService(settings.mqtt_broker_url, settings.mqtt_client_id)
-bms_service = BMSService(settings.bms_mac_address)
+bms_service = BMSService(
+    settings.bms_mac_address,
+    settings.soc_register,
+    settings.soc_scale,
+    settings.soc_offset,
+)
 database_service = DatabaseService(settings.database_url)
 
 @asynccontextmanager
@@ -114,10 +120,11 @@ async def get_bms_service() -> BMSService:
 async def get_database_service() -> DatabaseService:
     return database_service
 
-# 更新路由中的依賴注入
-app.dependency_overrides[get_cache_service] = lambda: cache_service
-app.dependency_overrides[get_mqtt_service] = lambda: mqtt_service
-app.dependency_overrides[get_database_service] = lambda: database_service
+# 更新路由中的依賴注入（覆寫 routes 模組中的佔位函式）
+app.dependency_overrides[api_routes.get_cache_service] = lambda: cache_service
+app.dependency_overrides[api_routes.get_mqtt_service] = lambda: mqtt_service
+app.dependency_overrides[api_routes.get_database_service] = lambda: database_service
+app.dependency_overrides[api_routes.get_bms_service] = lambda: bms_service
 
 # 註冊路由
 app.include_router(api_router, prefix="/api")
@@ -127,8 +134,8 @@ app.include_router(api_router, prefix="/api")
 async def websocket_route(websocket: WebSocket):
     await websocket_endpoint(websocket)
 
-# 靜態文件（如果需要）
-# app.mount("/", StaticFiles(directory="static", html=True), name="static")
+# 靜態文件（最小前端 UI）
+app.mount("/ui", StaticFiles(directory="static", html=True), name="ui")
 
 # 根路徑
 @app.get("/")
