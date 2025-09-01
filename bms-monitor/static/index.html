@@ -53,6 +53,21 @@
       const fmt = (n, d=3) => (typeof n === 'number' && !isNaN(n)) ? n.toFixed(d) : '--';
       const fmt1 = (n) => fmt(n, 1);
       const cellsBody = document.querySelector('#cellsTable tbody');
+      const STORAGE_KEY = 'battery:realtime-cache';
+
+      function saveCache(data) {
+        try {
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+        } catch (_) { /* ignore quota / privacy mode */ }
+      }
+
+      function loadCache() {
+        try {
+          const raw = localStorage.getItem(STORAGE_KEY);
+          if (!raw) return null;
+          return JSON.parse(raw);
+        } catch (_) { return null; }
+      }
 
       async function pullRealtime() {
         try {
@@ -63,6 +78,7 @@
       }
 
       function render(d) {
+        if (!d || typeof d !== 'object') return;
         $('v').textContent = fmt1(d.total_voltage);
         $('i').textContent = fmt1(d.current);
         const p = (d.total_voltage ?? 0) * (d.current ?? 0);
@@ -81,18 +97,40 @@
           const td = document.createElement('td'); td.textContent = fmt(cv, 3);
           tr.appendChild(th); tr.appendChild(td); cellsBody.appendChild(tr);
         });
+        // 快取最新資料
+        if (d && (d.timestamp || typeof d.total_voltage === 'number')) {
+          saveCache(d);
+        }
       }
 
       function connectWS() {
         const proto = location.protocol === 'https:' ? 'wss' : 'ws';
         const ws = new WebSocket(`${proto}://${location.host}/ws`);
-        ws.onopen = () => { $('wsdot').style.background = '#22c55e'; $('wstext').textContent = '已連線'; };
-        ws.onclose = () => { $('wsdot').style.background = '#dc2626'; $('wstext').textContent = '已斷線，5秒後重試'; setTimeout(connectWS, 5000); };
+        ws.onopen = () => { $('wsdot').style.background = '#22c55e'; $('wstext').textContent = '已連線'; $('state').textContent = '已連線'; };
+        ws.onclose = () => { $('wsdot').style.background = '#dc2626'; $('wstext').textContent = '已斷線，5秒後重試'; $('state').textContent = '已斷線（使用快取）'; setTimeout(connectWS, 5000); };
         ws.onerror = () => { $('wsdot').style.background = '#d97706'; $('wstext').textContent = '錯誤'; };
         ws.onmessage = (e) => {
-          try { const msg = JSON.parse(e.data); if (msg.type === 'realtime') render(msg.payload || msg); else render(msg); }
+          try {
+            const msg = JSON.parse(e.data);
+            // 後端廣播格式：{ topic, data, timestamp }；心跳/歡迎有 type
+            if (msg && msg.topic === 'realtime' && msg.data) {
+              render(msg.data);
+            } else if (msg && msg.type === 'realtime') {
+              render(msg.payload || msg.data || msg);
+            } else {
+              // 忽略非即時數據（welcome/heartbeat/alerts 等），避免覆蓋畫面為空
+              return;
+            }
+          }
           catch { /* ignore */ }
         };
+      }
+
+      // 先用本地快取立即渲染，避免重整後短暫空白
+      const cached = loadCache();
+      if (cached) {
+        render(cached);
+        $('state').textContent = '使用快取';
       }
 
       pullRealtime();
@@ -101,4 +139,3 @@
     </script>
   </body>
   </html>
-
